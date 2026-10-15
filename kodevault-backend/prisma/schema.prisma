@@ -1,0 +1,217 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  email        String   @unique
+  passwordHash String
+  avatarUrl    String   @default("")
+  bio          String   @default("")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  reposOwned     Repo[]             @relation("RepoOwner")
+  starredRepos   RepoStar[]
+  collaborations RepoCollaborator[]
+  commits        Commit[]
+  pullRequests   PullRequest[]
+  prComments     PRComment[]
+  issues         Issue[]
+  issueComments  IssueComment[]
+}
+
+model Repo {
+  id            String     @id @default(uuid())
+  name          String
+  description   String     @default("")
+  visibility    Visibility @default(PUBLIC)
+  defaultBranch String     @default("main")
+  starCount     Int        @default(0)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  ownerId String
+  owner   User   @relation("RepoOwner", fields: [ownerId], references: [id])
+
+  // no cascade here — deleting a fork shouldn't touch the repo it came from,
+  // and deleting a source repo shouldn't delete forks of it
+  forkedFromId String?
+  forkedFrom   Repo?   @relation("RepoForks", fields: [forkedFromId], references: [id])
+  forks        Repo[]  @relation("RepoForks")
+
+  branches      Branch[]
+  commits       Commit[]
+  pullRequests  PullRequest[]
+  issues        Issue[]
+  stars         RepoStar[]
+  collaborators RepoCollaborator[]
+
+  @@unique([ownerId, name])
+}
+
+enum Visibility {
+  PUBLIC
+  PRIVATE
+}
+
+model RepoCollaborator {
+  id         String     @id @default(uuid())
+  repoId     String
+  repo       Repo       @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User       @relation(fields: [userId], references: [id])
+  permission Permission @default(WRITE)
+
+  @@unique([repoId, userId])
+}
+
+enum Permission {
+  READ
+  WRITE
+}
+
+model RepoStar {
+  id     String @id @default(uuid())
+  repoId String
+  repo   Repo   @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@unique([repoId, userId])
+}
+
+// Content-addressable file storage: identical content always
+// produces the identical hash, so identical files are never duplicated.
+model Blob {
+  hash      String   @id
+  content   String
+  size      Int
+  createdAt DateTime @default(now())
+}
+
+// A directory snapshot. entries is a JSON array of
+// { name, type: "blob" | "tree", hash } — kept as JSON since
+// tree entries are read/written as a whole unit, not queried individually.
+model Tree {
+  hash      String   @id
+  entries   Json
+  createdAt DateTime @default(now())
+}
+
+model Commit {
+  hash      String   @id
+  repoId    String
+  repo      Repo     @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  treeHash  String
+  message   String
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  createdAt DateTime @default(now())
+
+  // self-referential many-to-many: a commit can have 0, 1 (normal), or 2
+  // (merge) parents, and can itself be the parent of many commits. This
+  // join table IS the DAG edge list — walking it is how the commit graph
+  // visualization and recursive-CTE history queries work.
+  parents  CommitParent[] @relation("Child")
+  children CommitParent[] @relation("Parent")
+
+  branches Branch[]
+}
+
+model CommitParent {
+  id         String @id @default(uuid())
+  childHash  String
+  child      Commit @relation("Child", fields: [childHash], references: [hash])
+  parentHash String
+  parent     Commit @relation("Parent", fields: [parentHash], references: [hash])
+
+  @@unique([childHash, parentHash])
+}
+
+model Branch {
+  id        String   @id @default(uuid())
+  name      String
+  repoId    String
+  repo      Repo     @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  headHash  String
+  head      Commit   @relation(fields: [headHash], references: [hash])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([repoId, name])
+}
+
+model PullRequest {
+  id           String   @id @default(uuid())
+  repoId       String
+  repo         Repo     @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  title        String
+  description  String   @default("")
+  authorId     String
+  author       User     @relation(fields: [authorId], references: [id])
+  sourceBranch String
+  targetBranch String
+  sourceCommit String
+  targetCommit String
+  status       PRStatus @default(OPEN)
+  mergeCommit  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  comments PRComment[]
+}
+
+enum PRStatus {
+  OPEN
+  MERGED
+  CLOSED
+  CONFLICT
+}
+
+model PRComment {
+  id        String      @id @default(uuid())
+  prId      String
+  pr        PullRequest @relation(fields: [prId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User        @relation(fields: [authorId], references: [id])
+  text      String
+  createdAt DateTime    @default(now())
+}
+
+model Issue {
+  id          String      @id @default(uuid())
+  repoId      String
+  repo        Repo        @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  title       String
+  description String      @default("")
+  authorId    String
+  author      User        @relation(fields: [authorId], references: [id])
+  status      IssueStatus @default(OPEN)
+  labels      String[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  comments IssueComment[]
+}
+
+enum IssueStatus {
+  OPEN
+  CLOSED
+}
+
+model IssueComment {
+  id        String   @id @default(uuid())
+  issueId   String
+  issue     Issue    @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  text      String
+  createdAt DateTime @default(now())
+}
